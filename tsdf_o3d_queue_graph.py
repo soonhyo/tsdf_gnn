@@ -13,17 +13,42 @@ import sensor_msgs.point_cloud2 as pc2
 
 from collections import deque
 
+import torch
+import torch.nn.functional as F
+from torch_geometric.data import Data
+from torch_geometric.nn import GCNConv
+
+
+class GCN(torch.nn.Module):
+    def __init__(self, input_features, hidden_channels):
+        super(GCN, self).__init__()
+        self.conv1 = GCNConv(input_features, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, hidden_channels)
+        self.conv3 = GCNConv(hidden_channels, input_features)
+
+    def forward(self, x, edge_index):
+        # 첫 번째 GCN 레이어
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+
+        # 두 번째 GCN 레이어
+        x = self.conv2(x, edge_index)
+        x = F.relu(x)
+
+        # 세 번째 GCN 레이어
+        x = self.conv3(x, edge_index)
+        x = F.relu(x)
+
+        return x
 
 class ImageSubscriber:
     def __init__(self):
         self.bridge = CvBridge()
-        self.depth_sub = message_filters.Subscriber('/masked_depth_image', Image)
-        self.color_sub = message_filters.Subscriber('/segmented_image', Image)
-        # self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
-        # self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
-
+        self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
+        self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
         self.info_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/camera_info', CameraInfo)
-        self.pub = rospy.Publisher("/open3d_pointcloud", PointCloud2, queue_size=10)
+        self.pcd_pub = rospy.Publisher("/open3d_pointcloud", PointCloud2, queue_size=10)
+
         self.rate = rospy.Rate(30)
 
         # 동기화된 메시지 필터
@@ -32,11 +57,11 @@ class ImageSubscriber:
 
         # VoxelBlockGrid 초기화
         self.device = o3c.Device("CUDA:0")  # 'CUDA:0' 또는 'CPU:0'로 설정하세요
-        self.voxel_size = 1.0 / 512
+        self.voxel_size = 2.0 / 512
         self.block_resolution = 8
-        self.block_count = 10000
+        self.block_count = 50000
         self.depth_scale = 1000.0
-        self.depth_max = 0.8
+        self.depth_max = 1.0
         self.vbg = None
 
         self.frame_count = 5
@@ -45,6 +70,8 @@ class ImageSubscriber:
         self.depth_queue = deque(maxlen=self.frame_count)
         self.color_queue = deque(maxlen=self.frame_count)
 
+        self.gcn = GCN(input_features=6, hidden_channels=64)
+
     def callback(self, depth_msg, color_msg, info_msg):
         try:
             # 이미지 변환
@@ -52,9 +79,6 @@ class ImageSubscriber:
             color_image = self.bridge.imgmsg_to_cv2(color_msg, "rgb8")
 
             # 큐에 이미지 추가
-            if not depth_image.any():
-                print("no depth image")
-                return
             self.depth_queue.append(depth_image)
             self.color_queue.append(color_image)
 
@@ -66,9 +90,8 @@ class ImageSubscriber:
             # 3D 재구성 수행
             self.integrate(intrinsic, self.depth_scale, self.depth_max, info_msg)
 
-        except Exception as e:
+        except CvBridgeError as e:
             print(e)
-
 
     def publish_pointcloud(self, pcd, camera_info):
         # Open3D 포인트 클라우드를 numpy 배열로 변환
@@ -97,7 +120,7 @@ class ImageSubscriber:
         cloud_data = pc2.create_cloud(header, fields, points)
 
         # 포인트 클라우드 Publish
-        self.pub.publish(cloud_data)
+        self.pcd_pub.publish(cloud_data)
 
     def integrate(self, intrinsic, depth_scale, depth_max, camera_info):
         self.vbg = o3d.t.geometry.VoxelBlockGrid(
@@ -113,7 +136,7 @@ class ImageSubscriber:
         for depth_image, color_image in zip(self.depth_queue, self.color_queue):
             start = time.time()
 
-            # OpenCV 이미지를 Open3D 이미지로 변환
+            # OpenCV 이미지를 Open3D 이미지로 n변환
             depth_o3d = o3d.t.geometry.Image(depth_image).to(self.device)
             color_o3d = o3d.t.geometry.Image(color_image).to(self.device)
 
@@ -132,8 +155,46 @@ class ImageSubscriber:
             # print('Finished integrating frames in {} seconds'.format(dt))
 
         pcd = self.vbg.extract_point_cloud().to_legacy()
+        mesh = self.vbg.extract_triangle_mesh().to_legacy()
+
+        if not mesh.is_empty():
+            o3d.visualization.draw([mesh])
+
+            graph_data = self.mesh_to_graph(mesh)
+            gcn_output = self.gcn(graph_data.x, graph_data.edge_index).to("cpu").detach().numpy().copy()
+
+            vertices = gcn_output[:,:3]
+            colors = gcn_output[:,3:]
+
+            pcd = o3d.t.geometry.PointCloud(vertices)
+            pcd.point.colors = colors
+            pcd = pcd.to_legacy()
+
         if not pcd.is_empty():
             self.publish_pointcloud(pcd, camera_info)
+
+    def mesh_to_graph(self, mesh):
+        # 메시에서 그래프 데이터 생성
+        vertices = np.asarray(mesh.vertices)
+        colors = np.asarray(mesh.vertex_colors)  # 정점의 색상 정보
+
+        # 엣지 인덱스 생성
+        edges = set()
+        for triangle in np.asarray(mesh.triangles):
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    edges.add((triangle[i], triangle[j]))
+
+        if len(edges) == 0:
+            raise ValueError("엣지 인덱스가 비어있습니다.")
+
+        features = np.concatenate([vertices, colors], axis=1)
+        x = torch.tensor(features, dtype=torch.float)
+        edge_index = torch.tensor(list(edges), dtype=torch.long).t().contiguous()
+        print(x.shape)
+        print(np.asarray(list(edges)).shape)
+
+        return Data(x=x, edge_index=edge_index)
 
 def main():
     rospy.init_node('image_subscriber', anonymous=True)
