@@ -19,11 +19,11 @@ class Open3DSlamNode:
         self.intrinsic_set = False
 
         # 깊이와 컬러 이미지를 위한 ROS 구독자 설정
-        # self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
-        # self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
+        self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
+        self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
 
-        self.depth_sub = message_filters.Subscriber('/masked_human_depth_image/camera', Image)
-        self.color_sub = message_filters.Subscriber('/segmented_human_image/camera', Image)
+        # self.depth_sub = message_filters.Subscriber('/masked_human_depth_image/camera', Image)
+        # self.color_sub = message_filters.Subscriber('/segmented_human_image/camera', Image)
 
         self.camera_info_sub = rospy.Subscriber('/camera/aligned_depth_to_color/camera_info', CameraInfo, self.camera_info_callback)
         self.pc_pub = rospy.Publisher("/open3d_pointcloud", PointCloud2, queue_size=10)
@@ -35,12 +35,12 @@ class Open3DSlamNode:
 
         # SLAM 관련 설정
         self.device = o3c.Device("CUDA:0")  # 또는 "CPU:0"
-        self.voxel_size = 0.004  # voxel 크기
+        self.voxel_size = 0.001  # voxel 크기
         self.depth_scale = 1000.0  # 깊이 스케일
-        self.depth_max = 0.8  # 최대 깊이
+        self.depth_max = 0.5  # 최대 깊이
         self.depth_min = 0.01
         self.odometry_distance_thr = 0.07
-        self.trunc_voxel_multiplier = 3.0
+        self.trunc_voxel_multiplier = 4.0
 
         self.input_frame = None
         self.raycast_frame = None

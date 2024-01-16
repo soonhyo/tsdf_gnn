@@ -21,10 +21,10 @@ import tf
 class ImageSubscriber:
     def __init__(self):
         self.bridge = CvBridge()
-        self.depth1_sub = message_filters.Subscriber('/masked_depth_image/1', Image)
-        self.color1_sub = message_filters.Subscriber('/segmented_image/1', Image)
-        self.depth2_sub = message_filters.Subscriber('/masked_depth_image/2', Image)
-        self.color2_sub = message_filters.Subscriber('/segmented_image/2', Image)
+        self.depth1_sub = message_filters.Subscriber('/masked_depth_image/camera1', Image)
+        self.color1_sub = message_filters.Subscriber('/segmented_image/camera1', Image)
+        self.depth2_sub = message_filters.Subscriber('/masked_depth_image/camera2', Image)
+        self.color2_sub = message_filters.Subscriber('/segmented_image/camera2', Image)
 
         self.info1_sub = message_filters.Subscriber('/camera1/aligned_depth_to_color/camera_info', CameraInfo)
         self.info2_sub = message_filters.Subscriber('/camera2/aligned_depth_to_color/camera_info', CameraInfo)
@@ -46,16 +46,18 @@ class ImageSubscriber:
         self.block_resolution = 8
         self.block_count = 10000
         self.depth_scale = 1000.0
-        self.depth_max = 1.5
+        self.depth_max = 2.0
         self.vbg = None
 
         self.frame_count = 10
+
+        self.camera_main_frame_id = None
 
         # 깊이와 컬러 이미지를 저장할 큐 초기화
         self.depth_queue = deque(maxlen=self.frame_count)
         self.color_queue = deque(maxlen=self.frame_count)
 
-    def get_extrinsic_matrix(self, target_frame, source_frame="world"):
+    def get_extrinsic_matrix(self, target_frame, source_frame="base"):
         try:
             # ROS에서 TF 정보를 얻음
             trans = self.tf_buffer.lookup_transform(source_frame, target_frame, rospy.Time(0), rospy.Duration(1.0))
@@ -84,13 +86,17 @@ class ImageSubscriber:
             color1_image = self.bridge.imgmsg_to_cv2(color1_msg, "rgb8")
             depth2_image = self.bridge.imgmsg_to_cv2(depth2_msg, "16UC1")
             color2_image = self.bridge.imgmsg_to_cv2(color2_msg, "rgb8")
-
             if not depth1_image.any() or not depth2_image.any():
                 print("no depth image")
                 return
 
-            extrinsic1 = self.get_extrinsic_matrix("camera1_link")
-            extrinsic2 = self.get_extrinsic_matrix("camera2_link")
+            # extrinsic1 = self.get_extrinsic_matrix("base","camera1_link")
+            extrinsic2 = self.get_extrinsic_matrix("camera1_color_optical_frame","camera2_color_optical_frame")
+            extrinsic1 = np.eye(4)
+            #extrinsic2 = np.eye(4)
+
+            if not self.camera_main_frame_id:
+                self.camera_main_frame_id = info1_msg.header.frame_id
 
             if extrinsic1 is not None and extrinsic2 is not None:
                 self.depth_queue.append((depth1_image, info1_msg, extrinsic1))
@@ -105,7 +111,7 @@ class ImageSubscriber:
         except Exception as e:
             print(e)
 
-    def publish_pointcloud(self, pcd, camera_info):
+    def publish_pointcloud(self, pcd, camera_main_frame_id):
         # Open3D 포인트 클라우드를 numpy 배열로 변환
         points = np.asarray(pcd.points)
         colors = np.asarray(pcd.colors)
@@ -121,7 +127,7 @@ class ImageSubscriber:
         # ROS PointCloud2 메시지 생성
         header = rospy.Header()
         header.stamp = rospy.Time.now()
-        header.frame_id = camera_info.header.frame_id
+        header.frame_id = camera_main_frame_id
 
         # PointField 구조 정의
         fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
@@ -171,9 +177,10 @@ class ImageSubscriber:
 
             dt = time.time() - start
             # print('Frame integration took {} seconds'.format(dt)
+
         pcd = self.vbg.extract_point_cloud().to_legacy()
         if not pcd.is_empty():
-            self.publish_pointcloud(pcd, camera_info)
+            self.publish_pointcloud(pcd, self.camera_main_frame_id)
 
         self.vbg = None
 
