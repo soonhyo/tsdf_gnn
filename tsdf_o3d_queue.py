@@ -17,12 +17,13 @@ from collections import deque
 class ImageSubscriber:
     def __init__(self):
         self.bridge = CvBridge()
-        self.depth_sub = message_filters.Subscriber('/masked_depth_image', Image)
-        self.color_sub = message_filters.Subscriber('/segmented_image', Image)
+        self.camera_ns = rospy.get_param("camera_ns", "camera")
+        self.depth_sub = message_filters.Subscriber('/masked_depth_image/'+self.camera_ns, Image)
+        self.color_sub = message_filters.Subscriber('/segmented_image/'+self.camera_ns, Image)
         # self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
         # self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
 
-        self.info_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/camera_info', CameraInfo)
+        self.info_sub = message_filters.Subscriber('/'+self.camera_ns+'/aligned_depth_to_color/camera_info', CameraInfo)
         self.pub = rospy.Publisher("/open3d_pointcloud", PointCloud2, queue_size=10)
         self.rate = rospy.Rate(30)
 
