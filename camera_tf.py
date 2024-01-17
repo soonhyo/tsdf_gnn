@@ -16,8 +16,8 @@ def publish_camera_tf():
         t = geometry_msgs.msg.TransformStamped()
 
         t.header.stamp = rospy.Time.now()
-        t.header.frame_id = "camera1_link"  # 베이스 프레임
-        t.child_frame_id = "camera2_link"  # 카메라 프레임
+        t.header.frame_id = "camera_link"  # 베이스 프레임
+        t.child_frame_id = "kinfu_first_frame"  # 카메라 프레임
 
         # # 위치 설정
         # t.transform.translation.x = 1.3
@@ -30,7 +30,7 @@ def publish_camera_tf():
         # 위치 설정
         t.transform.translation.x = 0
         t.transform.translation.y = 0
-        t.transform.translation.z = 0.3
+        t.transform.translation.z = 0
 
         # 방향 설정 (여기서는 45도 회전)
         # q = tf.transformations.quaternion_from_euler(np.pi, -np.pi, 0)  # 45도는 라디안으로 약 0.785398
