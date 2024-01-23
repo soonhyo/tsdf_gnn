@@ -5,6 +5,7 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import mediapipe as mp
+import numpy as np
 
 class ImageDepthProcessor:
     def __init__(self):
@@ -12,12 +13,14 @@ class ImageDepthProcessor:
         rospy.init_node(self.node_name)
 
         self.depth_pub = rospy.Publisher("/segmented_depth", Image, queue_size=10)
+        self.image_pub = rospy.Publisher("/segmented_image", Image, queue_size=10)
+
         self.bridge = CvBridge()
 
         self.mp_selfie_segmentation = mp.solutions.selfie_segmentation
         self.selfie_segmentation = self.mp_selfie_segmentation.SelfieSegmentation(model_selection=1)
 
-        self.image_sub = rospy.Subscriber("/camera/color/image_rect_color", Image, self.image_callback)
+        self.image_sub = rospy.Subscriber("/camera/color/image_raw", Image, self.image_callback)
         self.depth_sub = rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", Image, self.depth_callback)
 
         self.cv_image = None
@@ -47,12 +50,19 @@ class ImageDepthProcessor:
 
                 # Apply the mask to depth image
                 segmented_depth = mask * self.cv_depth
+                segmented_image = mask[:,:,np.newaxis] * self.cv_image
 
                 try:
                     depth_msg = self.bridge.cv2_to_imgmsg(segmented_depth, "16UC1")
                     if self.header is not None:
                         depth_msg.header = self.header
                     self.depth_pub.publish(depth_msg)
+
+                    image_msg = self.bridge.cv2_to_imgmsg(segmented_image, "rgb8")
+                    if self.header is not None:
+                        image_msg.header = self.header
+                    self.image_pub.publish(image_msg)
+
                 except CvBridgeError as e:
                     rospy.logerr(e)
 

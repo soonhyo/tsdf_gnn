@@ -51,6 +51,9 @@ class App:
         # self.base_options = python.BaseOptions(model_asset_path='selfie_multiclass_256x256.tflite',
         #                                        delegate=python.BaseOptions.Delegate.CPU)
 
+        # self.base_options = python.BaseOptions(model_asset_path='selfie_segmenter.tflite')
+        # self.base_options = python.BaseOptions(model_asset_path='deeplab_v3.tflite')
+
         self.options = ImageSegmenterOptions(base_options=self.base_options,
                                              running_mode=VisionRunningMode.LIVE_STREAM,
                                              output_category_mask=True,
@@ -85,7 +88,6 @@ class App:
         condition2 = category_mask.numpy_view() == 3
         condition3 = (category_mask.numpy_view() == 4) | (category_mask.numpy_view() == 2) | (category_mask.numpy_view() == 3)
         # condition3 = category_mask.numpy_view() != 0
-
         if np.sum(condition1) == 0:
             self.output_image = bg_image
         else:
@@ -108,16 +110,18 @@ class RosApp(App):
         self.bridge = CvBridge()
         self.image_pub = rospy.Publisher("segmented_mask", Image, queue_size=1)
         self.depth_pub = rospy.Publisher("segmented_depth", Image, queue_size=1) # 추가: 깊이 정보 발행을 위한 퍼블리셔
-        self.rate = rospy.Rate(60)
+        self.debug_pub = rospy.Publisher("segmented_image", Image, queue_size=1) # 추가: 깊이 정보 발행을 위한 퍼블리셔
+
+        self.rate = rospy.Rate(30)
         self.cv_image = None
         self.cv_depth = None # 추가: 깊이 이미지 저장을 위한 변수
-        rospy.Subscriber("/camera/color/image_rect_color", Image, self.image_callback)
+        rospy.Subscriber("/camera/color/image_raw", Image, self.image_callback)
         rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", Image, self.depth_callback) # 추가: 깊이 이미지 구독
 
     def image_callback(self, data):
         try:
-            self.cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
-            self.cv_image = cv2.cvtColor(self.cv_image, cv2.COLOR_BGR2RGB)
+            self.cv_image = self.bridge.imgmsg_to_cv2(data, "rgb8")
+            # self.cv_image = cv2.cvtColor(self.cv_image, cv2.COLOR_BGR2RGB)
         except CvBridgeError as e:
             rospy.logerr(e)
 
@@ -135,9 +139,10 @@ class RosApp(App):
                 if self.output_image is not None:
                     try:
                         # 사람 부분의 깊이 정보 추출
+                        # self.output_image = self.output_image_face
                         # human_depth = np.where(self.output_image_human, self.cv_depth, 0)
                         human_depth = np.where((self.output_image) & (self.cv_depth < 0.8*1000), self.cv_depth, 0)
-
+                        debug_image = np.where(self.output_image[:,:,np.newaxis]>0, self.cv_image, 0)
                         # 깊이 정보를 ROS 이미지 메시지로 변환 후 발행
                         ros_depth_image = self.bridge.cv2_to_imgmsg(human_depth, "16UC1")
                         ros_depth_image.header = Header(stamp=rospy.Time.now())
@@ -148,10 +153,13 @@ class RosApp(App):
                         ros_image.header = Header(stamp=rospy.Time.now())
                         self.image_pub.publish(ros_image)
 
+                        ros_debug_image = self.bridge.cv2_to_imgmsg(debug_image, "rgb8")
+                        ros_debug_image.header =Header(stamp=rospy.Time.now())
+                        self.debug_pub.publish(ros_debug_image)
                         self.output_image = None
                         end = time.time()
                         elapsed = end - start
-                        print("elapsed:", elapsed)
+                        # print("elapsed:", elapsed)
 
                     except CvBridgeError as e:
                         rospy.logerr(e)

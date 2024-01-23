@@ -40,7 +40,7 @@ class Open3DSlamNode:
         self.depth_max = 0.5  # 최대 깊이
         self.depth_min = 0.01
         self.odometry_distance_thr = 0.07
-        self.trunc_voxel_multiplier = 4.0
+        self.trunc_voxel_multiplier = 16.0
 
         self.input_frame = None
         self.raycast_frame = None
@@ -50,7 +50,7 @@ class Open3DSlamNode:
         # SLAM 모델 초기화
         self.T_frame_to_model = o3c.Tensor(np.identity(4))
         self.model = o3d.t.pipelines.slam.Model(self.voxel_size,
-                                                4,
+                                                16,
                                                 10000,
                                                 self.T_frame_to_model,
                                                 self.device)
