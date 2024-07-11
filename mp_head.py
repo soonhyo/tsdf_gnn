@@ -85,6 +85,7 @@ class App:
         bg_image[:] = BLACK_COLOR[0]
 
         condition1 = category_mask.numpy_view() == 1 # hair
+        # condition1 = (category_mask.numpy_view() == 1) | (category_mask.numpy_view() == 3)
         condition2 = category_mask.numpy_view() == 3
         condition3 = (category_mask.numpy_view() == 4) | (category_mask.numpy_view() == 2) | (category_mask.numpy_view() == 3)
         # condition3 = category_mask.numpy_view() != 0
@@ -115,7 +116,10 @@ class RosApp(App):
         self.rate = rospy.Rate(30)
         self.cv_image = None
         self.cv_depth = None # 추가: 깊이 이미지 저장을 위한 변수
-        rospy.Subscriber("/camera/color/image_raw", Image, self.image_callback)
+
+        self.header = None
+
+        rospy.Subscriber("/camera/color/image_rect_color", Image, self.image_callback)
         rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", Image, self.depth_callback) # 추가: 깊이 이미지 구독
 
     def image_callback(self, data):
@@ -128,38 +132,32 @@ class RosApp(App):
     def depth_callback(self, data): # 추가: 깊이 이미지 콜백 함수
         try:
             self.cv_depth = self.bridge.imgmsg_to_cv2(data, "16UC1")
+            self.header = data.header
+
         except CvBridgeError as e:
             rospy.logerr(e)
 
     def main(self):
         while not rospy.is_shutdown():
             if self.cv_image is not None and self.cv_depth is not None:
-                start = time.time()
                 self.update(self.cv_image)
                 if self.output_image is not None:
                     try:
-                        # 사람 부분의 깊이 정보 추출
-                        # self.output_image = self.output_image_face
-                        # human_depth = np.where(self.output_image_human, self.cv_depth, 0)
                         human_depth = np.where((self.output_image) & (self.cv_depth < 0.8*1000), self.cv_depth, 0)
                         debug_image = np.where(self.output_image[:,:,np.newaxis]>0, self.cv_image, 0)
-                        # 깊이 정보를 ROS 이미지 메시지로 변환 후 발행
+
                         ros_depth_image = self.bridge.cv2_to_imgmsg(human_depth, "16UC1")
-                        ros_depth_image.header = Header(stamp=rospy.Time.now())
+                        ros_depth_image.header = self.header
                         self.depth_pub.publish(ros_depth_image)
 
-                        # 색상 이미지 발행
                         ros_image = self.bridge.cv2_to_imgmsg(self.output_image, "8UC1")
-                        ros_image.header = Header(stamp=rospy.Time.now())
+                        ros_image.header = self.header
                         self.image_pub.publish(ros_image)
 
-                        ros_debug_image = self.bridge.cv2_to_imgmsg(debug_image, "rgb8")
-                        ros_debug_image.header =Header(stamp=rospy.Time.now())
+                        ros_debug_image = self.bridge.cv2_to_imgmsg(debug_image, "bgr8")
+                        ros_debug_image.header = self.header
                         self.debug_pub.publish(ros_debug_image)
                         self.output_image = None
-                        end = time.time()
-                        elapsed = end - start
-                        # print("elapsed:", elapsed)
 
                     except CvBridgeError as e:
                         rospy.logerr(e)

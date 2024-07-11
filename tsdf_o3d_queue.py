@@ -7,10 +7,10 @@ import message_filters
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
-
+import tf
+import tf.transformations as tf_trans
 from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2 as pc2
-
 from collections import deque
 
 
@@ -18,10 +18,10 @@ class ImageSubscriber:
     def __init__(self):
         self.bridge = CvBridge()
         self.camera_ns = rospy.get_param("camera_ns", "camera")
-        # self.depth_sub = message_filters.Subscriber('/masked_depth_image/'+self.camera_ns, Image)
-        # self.color_sub = message_filters.Subscriber('/segmented_image/'+self.camera_ns, Image)
-        self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
-        self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
+        self.depth_sub = message_filters.Subscriber('/segmented_depth', Image)
+        self.color_sub = message_filters.Subscriber('/orientation_image', Image)
+        # self.depth_sub = message_filters.Subscriber('/camera/aligned_depth_to_color/image_raw', Image)
+        # self.color_sub = message_filters.Subscriber('/camera/color/image_rect_color', Image)
 
         self.info_sub = message_filters.Subscriber('/'+self.camera_ns+'/aligned_depth_to_color/camera_info', CameraInfo)
         self.pub = rospy.Publisher("/open3d_pointcloud", PointCloud2, queue_size=10)
@@ -33,24 +33,49 @@ class ImageSubscriber:
 
         # VoxelBlockGrid 초기화
         self.device = o3c.Device("CUDA:0")  # 'CUDA:0' 또는 'CPU:0'로 설정하세요
-        self.voxel_size = 1.0 / 512
+        self.voxel_size = 1.5 / 512
         self.block_resolution = 8
         self.block_count = 10000
         self.depth_scale = 1000.0
         self.depth_max = 0.8
         self.vbg = None
 
-        self.frame_count = 50
+        self.frame_count = 5
+
+        self.header = None
+        self.target_frame = "camera_color_optical_frame"
+
+        self.trans = None
+        self.rot = None
+
+        self.listener = tf.TransformListener()
 
         # 깊이와 컬러 이미지를 저장할 큐 초기화
         self.depth_queue = deque(maxlen=self.frame_count)
         self.color_queue = deque(maxlen=self.frame_count)
 
+    def apply_transform_to_pcd(self, pcd, trans, rot):
+        M = tf_trans.concatenate_matrices(tf_trans.translation_matrix(trans),
+                                          tf_trans.quaternion_matrix(rot))
+        pcd.transform(M)
+        return pcd
+
+    def get_transform(self, target, source):
+        while self.trans is None or self.rot is None:
+            try:
+                (self.trans,self.rot) = self.listener.lookupTransform(target, source, rospy.Time(0))
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                continue
+
+
     def callback(self, depth_msg, color_msg, info_msg):
         try:
             # 이미지 변환
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "16UC1")
-            color_image = self.bridge.imgmsg_to_cv2(color_msg, "rgb8")
+            color_image = self.bridge.imgmsg_to_cv2(color_msg, "bgr8")
+
+            self.header = depth_msg.header
+            self.get_transform(self.target_frame, self.header.frame_id)
 
             # 큐에 이미지 추가
             if not depth_image.any():
@@ -75,6 +100,7 @@ class ImageSubscriber:
         # Open3D 포인트 클라우드를 numpy 배열로 변환
         points = np.asarray(pcd.points)
         colors = np.asarray(pcd.colors)
+
         r, g, b = (colors * 255).astype(np.uint8).T
 
         rgba = np.left_shift(np.ones_like(r, dtype=np.uint32) * 255, 24) | \
@@ -85,9 +111,7 @@ class ImageSubscriber:
         points = np.concatenate((points, rgba[:, np.newaxis].astype(np.uint32)), axis=1, dtype=object)
 
         # ROS PointCloud2 메시지 생성
-        header = rospy.Header()
-        header.stamp = rospy.Time.now()
-        header.frame_id = camera_info.header.frame_id
+        header = camera_info.header
 
         # PointField 구조 정의
         fields = [pc2.PointField('x', 0, pc2.PointField.FLOAT32, 1),
@@ -133,8 +157,11 @@ class ImageSubscriber:
             # print('Finished integrating frames in {} seconds'.format(dt))
 
         pcd = self.vbg.extract_point_cloud().to_legacy()
+        # Open3D PointCloud에 변환 적용
+        transformed_pcd = self.apply_transform_to_pcd(pcd, self.trans, self.rot)
+
         if not pcd.is_empty():
-            self.publish_pointcloud(pcd, camera_info)
+            self.publish_pointcloud(transformed_pcd, camera_info)
 
 def main():
     rospy.init_node('image_subscriber', anonymous=True)
